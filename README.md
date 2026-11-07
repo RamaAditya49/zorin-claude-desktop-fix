@@ -34,18 +34,27 @@ sudo apt install git gcc python3 zenity libnotify-bin libglib2.0-bin xdg-utils d
 
 Skip this section if `claude-desktop` is already installed.
 
+1. Download the signing key of the Claude Desktop package:
+
 ```bash
 sudo curl -fsSL https://downloads.claude.ai/keys/claude-code.asc \
   -o /usr/share/keyrings/claude-desktop-archive-keyring.asc
-echo "deb [arch=amd64,arm64 signed-by=/usr/share/keyrings/claude-desktop-archive-keyring.asc] https://downloads.claude.ai/claude-desktop/apt/stable stable main" \
-  | sudo tee /etc/apt/sources.list.d/claude-desktop.list
-sudo apt update && sudo apt install claude-desktop
 ```
 
-Check the key fingerprint. It must be `31DDDE24DDFAB679F42D7BD2BAA929FF1A7ECACE`.
+2. Check the key fingerprint. The output must show `31DDDE24DDFAB679F42D7BD2BAA929FF1A7ECACE`.
+   If it shows a different value, stop and delete the key file.
+   A matching fingerprint shows that the file is the Anthropic release key, not a changed copy. apt then installs only packages that this key signed.
 
 ```bash
 gpg --show-keys /usr/share/keyrings/claude-desktop-archive-keyring.asc
+```
+
+3. Add the package source and install Claude Desktop:
+
+```bash
+echo "deb [arch=amd64,arm64 signed-by=/usr/share/keyrings/claude-desktop-archive-keyring.asc] https://downloads.claude.ai/claude-desktop/apt/stable stable main" \
+  | sudo tee /etc/apt/sources.list.d/claude-desktop.list
+sudo apt update && sudo apt install claude-desktop
 ```
 
 ## Install

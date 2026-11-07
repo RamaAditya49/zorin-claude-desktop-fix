@@ -34,18 +34,27 @@ sudo apt install git gcc python3 zenity libnotify-bin libglib2.0-bin xdg-utils d
 
 Lewati bagian ini jika `claude-desktop` sudah terpasang.
 
+1. Unduh kunci tanda tangan paket Claude Desktop:
+
 ```bash
 sudo curl -fsSL https://downloads.claude.ai/keys/claude-code.asc \
   -o /usr/share/keyrings/claude-desktop-archive-keyring.asc
-echo "deb [arch=amd64,arm64 signed-by=/usr/share/keyrings/claude-desktop-archive-keyring.asc] https://downloads.claude.ai/claude-desktop/apt/stable stable main" \
-  | sudo tee /etc/apt/sources.list.d/claude-desktop.list
-sudo apt update && sudo apt install claude-desktop
 ```
 
-Cek fingerprint kunci. Nilainya harus `31DDDE24DDFAB679F42D7BD2BAA929FF1A7ECACE`.
+2. Cek fingerprint kunci. Output harus menulis `31DDDE24DDFAB679F42D7BD2BAA929FF1A7ECACE`.
+   Kalau nilainya beda, berhenti dan hapus berkas kunci itu.
+   Fingerprint yang cocok menunjukkan bahwa berkas ini adalah kunci rilis Anthropic, bukan salinan yang diubah. Lalu apt hanya memasang paket yang ditandatangani kunci ini.
 
 ```bash
 gpg --show-keys /usr/share/keyrings/claude-desktop-archive-keyring.asc
+```
+
+3. Tambah sumber paket, lalu pasang Claude Desktop:
+
+```bash
+echo "deb [arch=amd64,arm64 signed-by=/usr/share/keyrings/claude-desktop-archive-keyring.asc] https://downloads.claude.ai/claude-desktop/apt/stable stable main" \
+  | sudo tee /etc/apt/sources.list.d/claude-desktop.list
+sudo apt update && sudo apt install claude-desktop
 ```
 
 ## Pasang
