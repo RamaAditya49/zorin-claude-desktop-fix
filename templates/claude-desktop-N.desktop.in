@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=@NAME@
+Comment=Claude Desktop - profile @N@
+Exec=@BIN_DIR@/claude-profile @N@ %U
+Icon=claude-profile-@N@
+Type=Application
+StartupNotify=true
+StartupWMClass=claude-desktop-@N@
+Categories=Utility;Development;
+Keywords=AI;Chat;Claude;

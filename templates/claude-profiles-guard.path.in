@@ -1,0 +1,12 @@
+[Unit]
+Description=Run claude-profiles-guard when launchers or link handlers change
+
+[Path]
+PathChanged=@DATA@/applications
+PathChanged=@CONFIG@/mimeapps.list
+PathChanged=@DATA@/flatpak/db/desktop-used-apps
+PathChanged=@PKG_DESKTOP@
+Unit=claude-profiles-guard.service
+
+[Install]
+WantedBy=default.target

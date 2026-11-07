@@ -1,0 +1,6 @@
+[Unit]
+Description=Keep Claude Desktop profile launchers and claude:// routing intact
+
+[Service]
+Type=oneshot
+ExecStart=@BIN_DIR@/claude-profiles-guard

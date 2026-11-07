@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=@NAME@ (autostart)
+Comment=Start Claude Desktop profile @N@ at login so its scheduled tasks run.
+Exec=@BIN_DIR@/claude-profile @N@ --startup
+Icon=claude-profile-@N@
+X-GNOME-Autostart-enabled=true
+X-GNOME-Autostart-Delay=@DELAY@

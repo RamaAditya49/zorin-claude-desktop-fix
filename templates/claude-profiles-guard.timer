@@ -1,0 +1,10 @@
+[Unit]
+Description=Run claude-profiles-guard at login and every 15 minutes
+
+[Timer]
+OnStartupSec=30s
+OnUnitActiveSec=15min
+Unit=claude-profiles-guard.service
+
+[Install]
+WantedBy=timers.target

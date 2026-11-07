@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+# Send a claude:// link (or a .mcpb or .skill file) to the correct Claude Desktop profile.
+# 1. No argument: open profile 1 (this raises its window).
+# 2. Only profile 1 exists: open it with the argument.
+# 3. A profile started a sign-in less than 10 minutes ago: use that profile.
+# 4. Otherwise ask which profile to use. CLAUDE_ROUTER_PICK=<N> skips the question.
+# Set CLAUDE_ROUTER_DRY=1 to print the command and leave without a start.
+set -u
+
+here=$(dirname "$(readlink -f "$0")")
+CONFIG=${XDG_CONFIG_HOME:-$HOME/.config}
+CACHE=${XDG_CACHE_HOME:-$HOME/.cache}
+CONF=$CONFIG/claude-profiles/profiles.conf
+LOG=$CACHE/claude-profiles/router.log
+mkdir -p "$CACHE/claude-profiles"
+arg=${1:-}
+
+# Write a log line that holds the link scheme and host only. Never the path or query.
+log_choice() {
+  local what rest host
+  if [ -z "$arg" ]; then what="none"
+  elif [[ "$arg" =~ ^[A-Za-z][A-Za-z0-9+.-]*:// ]]; then
+    rest=${arg#*://}; host=${rest%%[/?#]*}; host=${host##*@}
+    what="${arg%%://*}://$host"
+  else what="file"
+  fi
+  printf '%s %s profile=%s\n' "$(date '+%F %T')" "$what" "$1" >> "$LOG"
+}
+
+run() {
+  local n=$1
+  log_choice "$n"
+  if [ -n "${CLAUDE_ROUTER_DRY:-}" ]; then
+    echo "claude-profile $n${arg:+ $arg}"
+    exit 0
+  fi
+  exec "$here/claude-profile" "$n" ${arg:+"$arg"}
+}
+
+if [ -z "$arg" ]; then
+  # A dock click has no link. claude-profile 1 brings the window to the front.
+  [ -n "${CLAUDE_ROUTER_DRY:-}" ] && { echo "claude-profile 1"; exit 0; }
+  exec "$here/claude-profile" 1
+fi
+
+# Read profiles.conf. Missing file means profile 1 only.
+nums=(); names=()
+if [ -f "$CONF" ]; then
+  while IFS= read -r line || [ -n "$line" ]; do
+    line=${line%$'\r'}
+    case "$line" in ''|'#'*) continue ;; esac
+    num=${line%% *}
+    case "$num" in [1-9]) ;; *) continue ;; esac
+    name=${line#"$num"}; name=${name# }
+    nums+=("$num"); names+=("${name:-Claude $num}")
+  done < "$CONF"
+fi
+if [ "${#nums[@]}" -eq 0 ]; then nums=(1); names=(Claude); fi
+
+[ "${#nums[@]}" -eq 1 ] && run "${nums[0]}"
+
+# Find the profile that started a sign-in in the last 10 minutes.
+now=$(date +%s)
+best=""; best_t=0
+for n in "${nums[@]}"; do
+  if [ "$n" = 1 ]; then dir=$CONFIG/Claude; else dir=$CONFIG/Claude-$n; fi
+  line=$(grep -a '\[Auth\] Using system browser' "$dir/logs/main.log" 2>/dev/null | tail -1)
+  [ -n "$line" ] || continue
+  t=$(date -d "${line:0:19}" +%s 2>/dev/null) || continue
+  if (( t > best_t && now - t < 600 )); then best_t=$t; best=$n; fi
+done
+[ -n "$best" ] && run "$best"
+
+if [ -n "${CLAUDE_ROUTER_PICK:-}" ]; then
+  case "$CLAUDE_ROUTER_PICK" in
+    [1-9]) run "$CLAUDE_ROUTER_PICK" ;;
+  esac
+fi
+
+if command -v zenity >/dev/null 2>&1; then
+  rows=()
+  for i in "${!nums[@]}"; do rows+=("${nums[$i]}" "${names[$i]}"); done
+  pick=$(zenity --list --title="Open in which Claude?" \
+    --text="Choose the Claude profile that started this sign-in." \
+    --column=n --column=Claude --hide-column=1 --print-column=1 \
+    --width=360 --height=300 "${rows[@]}" 2>/dev/null) || exit 0
+  # Some zenity versions print the value twice, as "2|2".
+  pick=${pick%%|*}
+  case "$pick" in [1-9]) run "$pick" ;; *) exit 0 ;; esac
+fi
+run 1

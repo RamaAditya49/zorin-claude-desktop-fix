@@ -1,0 +1,268 @@
+#!/usr/bin/env python3
+"""Bring the window of one Claude Desktop profile to the front on GNOME Wayland.
+
+Why this script exists:
+- The dock gives its activation token to the short second launch, not to the
+  running app. GNOME then refuses to let the app raise or unminimize its window.
+- A window that comes back from the tray can stay at 0x0 until GNOME sends it
+  a size. The window is then on screen but you cannot see it.
+- Without the claude-app-id library, all profiles report the same app id, and
+  the dock puts every window under one icon.
+
+This script asks GNOME Shell, through the window-control extension
+(computer-use-linux@avifenesh.dev), to size, place, and activate the window.
+If the profile does not run, or the extension is not available, it runs the
+plain launch.
+
+Usage: claude-profile-raise <N>        (N is 1 to 9)
+Log:   $XDG_CACHE_HOME/claude-profiles/raise.log
+"""
+import ast
+import fcntl
+import json
+import os
+import subprocess
+import sys
+import time
+
+HOME = os.path.expanduser("~")
+CONFIG = os.environ.get("XDG_CONFIG_HOME") or os.path.join(HOME, ".config")
+CACHE = os.environ.get("XDG_CACHE_HOME") or os.path.join(HOME, ".cache")
+STATE = os.path.join(CACHE, "claude-profiles")
+LOG = os.path.join(STATE, "raise.log")
+HERE = os.path.dirname(os.path.realpath(__file__))
+DEST = "dev.avifenesh.ComputerUseLinux.WindowControl"
+BUS = ["gdbus", "call", "--session", "--dest", DEST,
+       "--object-path", "/dev/avifenesh/ComputerUseLinux/WindowControl", "--method"]
+DEFAULT_W, DEFAULT_H = 1400, 900
+
+
+def claude_launcher():
+    """Return the path of the claude-desktop launcher."""
+    env = os.environ.get("CLAUDE_DESKTOP_BIN")
+    if env:
+        return env
+    for d in os.environ.get("PATH", "").split(":"):
+        p = os.path.join(d, "claude-desktop")
+        if d and os.path.isfile(p) and os.access(p, os.X_OK):
+            return p
+    return "/usr/bin/claude-desktop"
+
+
+def claude_exe():
+    """Return the real Electron executable."""
+    return os.environ.get("CLAUDE_DESKTOP_EXE") or os.path.realpath(claude_launcher())
+
+
+def data_dir_for(n):
+    return os.path.join(CONFIG, "Claude" if n == 1 else f"Claude-{n}")
+
+
+def profile_name(n):
+    """Read the display name from profiles.conf."""
+    fallback = "Claude" if n == 1 else f"Claude {n}"
+    try:
+        with open(os.path.join(CONFIG, "claude-profiles", "profiles.conf")) as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                num, _, name = line.partition(" ")
+                if num == str(n) and name.strip():
+                    return name.strip()
+    except OSError:
+        pass
+    return fallback
+
+
+def log(n, msg):
+    os.makedirs(STATE, exist_ok=True)
+    with open(LOG, "a") as f:
+        f.write(f"{time.strftime('%F %T')} {n} {msg}\n")
+
+
+def launch_cmd(n):
+    return [os.path.join(HERE, "claude-profile"), str(n)]
+
+
+def plain_env():
+    env = dict(os.environ)
+    env["CLAUDE_PLAIN_LAUNCH"] = "1"
+    return env
+
+
+def main_pid(n, app):
+    """Return the pid of the main process of this profile, or None."""
+    want = data_dir_for(n).rstrip("/")
+    default = data_dir_for(1)
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        try:
+            # argv[0] can be a symlink or the real path. Check the exe.
+            if os.readlink(f"/proc/{entry}/exe") != app:
+                continue
+            with open(f"/proc/{entry}/cmdline", "rb") as f:
+                # Electron rewrites its cmdline with spaces, not NUL, so split on both.
+                args = f.read().replace(b"\0", b" ").decode(errors="replace").split()
+        except OSError:
+            continue
+        if not args or any(a.startswith("--type=") for a in args):
+            continue
+        d = next((a.split("=", 1)[1] for a in args if a.startswith("--user-data-dir=")), default)
+        if d.rstrip("/") == want:
+            return int(entry)
+    return None
+
+
+def call(method, *args):
+    out = subprocess.run(BUS + [f"{DEST}.{method}", *map(str, args)],
+                         capture_output=True, text=True, timeout=5)
+    if out.returncode != 0:
+        raise RuntimeError(out.stderr.strip())
+    return out.stdout.strip()
+
+
+def call_json(method):
+    # The reply is the GVariant text ('<json>',). Its quoting matches a Python literal.
+    return json.loads(ast.literal_eval(call(method))[0])
+
+
+def profile_windows(pid):
+    return [w for w in call_json("ListWindows") if w.get("pid") == pid]
+
+
+def area(w):
+    b = w.get("bounds") or {}
+    return b.get("width", 0) * b.get("height", 0)
+
+
+def pick(wins):
+    real = [w for w in wins if area(w) > 0]
+    if real:
+        return max(real, key=area)
+    return max(wins, key=lambda w: w["window_id"])
+
+
+def find(wins, window_id):
+    return next((w for w in wins if w["window_id"] == window_id), None)
+
+
+def wait(fn, seconds):
+    end = time.monotonic() + seconds
+    while True:
+        result = fn()
+        if result or time.monotonic() > end:
+            return result
+        time.sleep(0.25)
+
+
+def on_a_monitor(w, monitors):
+    b = w["bounds"]
+    cx, cy = b["x"] + b["width"] // 2, b["y"] + b["height"] // 2
+    return any(m["x"] <= cx < m["x"] + m["width"] and m["y"] <= cy < m["y"] + m["height"]
+               for m in monitors)
+
+
+def target_monitor(monitors):
+    """Use the monitor of the focused window. Else the primary monitor."""
+    try:
+        focused = next((w for w in call_json("ListWindows") if w.get("focused")), None)
+    except Exception:
+        focused = None
+    if focused and area(focused) > 0:
+        for m in monitors:
+            if on_a_monitor(focused, [m]):
+                return m
+    return next((m for m in monitors if m.get("primary")), monitors[0])
+
+
+def saved_size(data_dir, mon):
+    w, h = DEFAULT_W, DEFAULT_H
+    try:
+        with open(os.path.join(data_dir, "window-state.json")) as f:
+            s = json.load(f)
+        if s.get("width", 0) > 200 and s.get("height", 0) > 200:
+            w, h = s["width"], s["height"]
+    except (OSError, ValueError):
+        pass
+    return min(w, mon["width"] - 80), min(h, mon["height"] - 120)
+
+
+def notify(text):
+    try:
+        subprocess.run(["notify-send", "-a", "Claude", "-i", "claude-desktop", "Claude", text],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError:
+        pass
+
+
+def main():
+    if len(sys.argv) != 2 or sys.argv[1] not in "123456789" or len(sys.argv[1]) != 1:
+        sys.stderr.write("usage: claude-profile-raise <1-9>\n")
+        return 2
+    n = int(sys.argv[1])
+    data_dir = data_dir_for(n)
+    name = profile_name(n)
+    cmd = launch_cmd(n)
+    os.makedirs(STATE, exist_ok=True)
+
+    pid = main_pid(n, claude_exe())
+    if pid is None:
+        log(n, "not running: plain launch")
+        os.execve(cmd[0], cmd, plain_env())
+
+    try:
+        monitors = call_json("GetMonitorLayout")
+    except Exception as e:
+        log(n, f"window-control extension not available ({e}): plain launch")
+        os.execve(cmd[0], cmd, plain_env())
+
+    # A double click on the dock runs this script twice. Let only one run work.
+    lock = open(os.path.join(STATE, f"raise.{n}.lock"), "w")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return 0
+
+    wins = profile_windows(pid)
+    if not wins:
+        # The window is in the tray. A second launch makes the running app show it.
+        subprocess.run(cmd, env=plain_env(), stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL, timeout=30)
+        wins = wait(lambda: profile_windows(pid), 8)
+        if not wins:
+            log(n, "no window after second launch")
+            notify(f"The {name} window did not open. Click the Claude icon in the system tray.")
+            return 1
+
+    w = pick(wins)
+    wid = w["window_id"]
+    mon = target_monitor(monitors)
+    if area(w) == 0 or not on_a_monitor(w, monitors):
+        width, height = saved_size(data_dir, mon)
+        # A new window can drop the first resize. Activate it and send the resize again.
+        for attempt in range(5):
+            if attempt:
+                call("ActivateWindow", wid)
+            call("ResizeWindow", wid, width, height)
+            w = wait(lambda: (lambda x: x if x and area(x) > 0 else None)(find(profile_windows(pid), wid)), 1.5)
+            if w:
+                break
+        if not w:
+            log(n, f"window {wid} stays at 0x0 after resize")
+            notify(f"The {name} window is stuck. Right-click the Claude icon in the system tray, "
+                   "choose Quit, then open it again.")
+            return 1
+        # GNOME drops a move that arrives before the resize finishes, so move after it.
+        call("MoveWindow", wid, mon["x"] + (mon["width"] - width) // 2,
+             mon["y"] + (mon["height"] - height) // 2)
+        log(n, f"window {wid} was 0x0 or off screen: set {width}x{height} on monitor {mon.get('index', '?')}")
+
+    call("ActivateWindow", wid)
+    log(n, f"activated window {wid}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

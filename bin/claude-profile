@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# Start Claude Desktop profile N (1 to 9).
+#   claude-profile N            Bring the profile window to the front (or start it).
+#   claude-profile N [args...]  Start the profile with these arguments.
+# Set CLAUDE_PROFILE_DRY=1 to print the command and leave without a start.
+set -u
+
+here=$(dirname "$(readlink -f "$0")")
+DATA=${XDG_DATA_HOME:-$HOME/.local/share}
+CONFIG=${XDG_CONFIG_HOME:-$HOME/.config}
+
+n=${1:-}
+case "$n" in
+  [1-9]) ;;
+  *) echo "usage: claude-profile <1-9> [args...]" >&2; exit 2 ;;
+esac
+shift
+
+if [ -z "${CLAUDE_DESKTOP_BIN:-}" ]; then
+  CLAUDE_DESKTOP_BIN=$(command -v claude-desktop 2>/dev/null || true)
+  [ -n "$CLAUDE_DESKTOP_BIN" ] || CLAUDE_DESKTOP_BIN=/usr/bin/claude-desktop
+fi
+BIN=$CLAUDE_DESKTOP_BIN
+LIB=$DATA/claude-profiles/claude-app-id.so
+
+# A dock click has no arguments. The raise script shows the window.
+if [ $# -eq 0 ] && [ -z "${CLAUDE_PLAIN_LAUNCH:-}" ]; then
+  if [ -n "${CLAUDE_PROFILE_DRY:-}" ]; then
+    echo "raise $n"
+    exit 0
+  fi
+  exec "$here/claude-profile-raise" "$n"
+fi
+unset CLAUDE_PLAIN_LAUNCH
+
+if [ "$n" = 1 ]; then
+  # Profile 1 keeps the package app id. Remove our library from LD_PRELOAD.
+  if [ -n "${LD_PRELOAD:-}" ]; then
+    new=""
+    IFS=':' read -r -a parts <<< "$LD_PRELOAD"
+    for p in "${parts[@]}"; do
+      [ -n "$p" ] || continue
+      [ "$p" = "$LIB" ] && continue
+      new=${new:+$new:}$p
+    done
+    if [ -n "$new" ]; then export LD_PRELOAD="$new"; else unset LD_PRELOAD; fi
+  fi
+  unset CLAUDE_APP_ID
+  cmd=("$BIN" "$@")
+else
+  dir=$CONFIG/Claude-$n
+  if [ -f "$LIB" ]; then
+    export CLAUDE_APP_ID="claude-desktop-$n"
+    case ":${LD_PRELOAD:-}:" in
+      *":$LIB:"*) ;;
+      *) export LD_PRELOAD="$LIB${LD_PRELOAD:+:$LD_PRELOAD}" ;;
+    esac
+  fi
+  cmd=("$BIN" "--user-data-dir=$dir" "--class=claude-desktop-$n" "$@")
+fi
+
+if [ -n "${CLAUDE_PROFILE_DRY:-}" ]; then
+  echo "LD_PRELOAD=${LD_PRELOAD:-}"
+  echo "CLAUDE_APP_ID=${CLAUDE_APP_ID:-}"
+  echo "exec ${cmd[*]}"
+  exit 0
+fi
+exec "${cmd[@]}"

@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+# Keep the multi-profile Claude Desktop setup intact after app updates, restarts,
+# or a remembered portal choice.
+# Each step writes only when the current state is wrong, so the path unit does not loop.
+set -u
+
+here=$(dirname "$(readlink -f "$0")")
+DATA=${XDG_DATA_HOME:-$HOME/.local/share}
+CONFIG=${XDG_CONFIG_HOME:-$HOME/.config}
+CACHE=${XDG_CACHE_HOME:-$HOME/.cache}
+A=$DATA/applications
+T=$DATA/claude-profiles/desktop
+SHADOW=$A/com.anthropic.Claude.desktop
+LOG=$CACHE/claude-profiles/guard.log
+mkdir -p "$CACHE/claude-profiles" "$A"
+changed=0
+note() { printf '%s %s\n' "$(date '+%F %T')" "$*" >> "$LOG"; changed=1; }
+
+# Name of profile 1 from profiles.conf.
+name1=Claude
+if [ -f "$CONFIG/claude-profiles/profiles.conf" ]; then
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      "1 "*) n=${line#1 }; n=${n%$'\r'}; [ -n "$n" ] && name1=$n; break ;;
+    esac
+  done < "$CONFIG/claude-profiles/profiles.conf"
+fi
+
+# 1. Restore a missing or changed profile launcher from its template.
+for t in "$T"/claude-desktop-[0-9]*.desktop; do
+  [ -f "$t" ] || continue
+  f=$A/$(basename "$t")
+  cmp -s "$t" "$f" 2>/dev/null || { cp "$t" "$f"; note "restored $(basename "$t")"; }
+done
+
+# 2. Shadow the package launcher. It keeps the same id, so old dock pins still work.
+#    It sends claude:// links and dock clicks to the router.
+pkg=""
+IFS=':' read -r -a dirs <<< "${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
+for d in "${dirs[@]}"; do
+  [ -n "$d" ] || continue
+  [ "${d%/}" = "${DATA%/}" ] && continue
+  if [ -f "$d/applications/com.anthropic.Claude.desktop" ]; then
+    pkg=$d/applications/com.anthropic.Claude.desktop
+    break
+  fi
+done
+if [ -n "$pkg" ]; then
+  # Pass the values through the environment. awk -v changes backslashes.
+  want=$(EXEC_LINE="Exec=$here/claude-url-router %U" NAME_LINE="Name=$name1" awk '
+    /^\[/ { grp = ($0 == "[Desktop Entry]"); print; next }
+    grp && !did_exec && /^Exec=/ { print ENVIRON["EXEC_LINE"]; did_exec = 1; next }
+    grp && !did_name && /^Name=/ { print ENVIRON["NAME_LINE"]; did_name = 1; next }
+    { print }
+  ' "$pkg")
+  have=""
+  [ -f "$SHADOW" ] && have=$(cat "$SHADOW")
+  if [ "$want" != "$have" ]; then
+    printf '%s\n' "$want" > "$SHADOW"
+    note "rewrote com.anthropic.Claude.desktop"
+  fi
+fi
+
+# 3. Only the shadow launcher may claim claude:// links.
+for f in "$A"/claude-desktop-[0-9]*.desktop; do
+  [ -f "$f" ] || continue
+  if grep -q '^MimeType=.*x-scheme-handler/claude' "$f"; then
+    sed -i '/^MimeType=.*x-scheme-handler\/claude/d' "$f"
+    note "removed MimeType from $(basename "$f")"
+  fi
+done
+
+# 4. Refresh the desktop database after a change.
+if [ "$changed" = 1 ] && command -v update-desktop-database >/dev/null 2>&1; then
+  update-desktop-database "$A" 2>/dev/null
+fi
+
+# 5. The default claude:// handler is the shadow launcher.
+if command -v xdg-mime >/dev/null 2>&1; then
+  if [ "$(xdg-mime query default x-scheme-handler/claude 2>/dev/null)" != com.anthropic.Claude.desktop ]; then
+    xdg-mime default com.anthropic.Claude.desktop x-scheme-handler/claude
+    note "reset xdg-mime default"
+  fi
+fi
+
+# 6. A profile with its own app id registers itself for claude:// at start.
+#    Remove the profile launchers from the added associations.
+M=$CONFIG/mimeapps.list
+if grep -qE '^x-scheme-handler/claude=.*claude-desktop-[0-9]+\.desktop' "$M" 2>/dev/null; then
+  sed -i -E '/^x-scheme-handler\/claude=/s/claude-desktop-[0-9]+\.desktop;?//g' "$M"
+  note "removed profile launchers from claude:// associations"
+fi
+
+# 7. Flatpak browsers remember their own handler. Point it at the shadow launcher too.
+if command -v flatpak >/dev/null 2>&1; then
+  flatpak permissions desktop-used-apps 2>/dev/null | awk '$2=="x-scheme-handler/claude"{print $3, $4}' |
+  while read -r app val; do
+    [ "${val%%,*}" = com.anthropic.Claude ] && continue
+    flatpak permission-set desktop-used-apps x-scheme-handler/claude "$app" com.anthropic.Claude 3 3
+    printf '%s %s\n' "$(date '+%F %T')" "reset portal handler for $app (was $val)" >> "$LOG"
+  done
+fi
+exit 0
