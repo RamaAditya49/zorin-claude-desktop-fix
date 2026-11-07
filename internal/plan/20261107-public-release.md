@@ -1,7 +1,7 @@
 ---
 type: plan
 id: 20261107-public-release
-status: in-progress    # draft | in-progress | blocked | done
+status: done           # draft | in-progress | blocked | done
 spec: internal/spec/20261107-public-release.md
 created: 2026-11-07
 updated: 2026-11-07
@@ -81,7 +81,7 @@ Launcher ini tetap tampil di menu. Ikon pin dock yang lama tetap jalan karena id
 - [x] 8. Tulis test — berkas: `tests/run.sh` — AC: AC-03 sampai AC-13 — verifikasi: `bash tests/run.sh` di host build
 - [x] 9. Tulis dokumentasi — berkas: `README.md`, `README.id.md`, `docs/how-it-works.md`, `LICENSE` — AC: AC-14 — verifikasi: review
 - [x] 10. Audit rahasia dan path — berkas: semua — AC: AC-01, AC-02 — verifikasi: `gitleaks detect`, `grep`
-- [ ] 11. Buat repo GitHub publik dan push — AC: AC-15 — verifikasi: `gh repo view --json visibility`
+- [x] 11. Buat repo GitHub publik dan push — AC: AC-15 — verifikasi: `gh repo view --json visibility`
 
 ## Risiko dan rollback
 
